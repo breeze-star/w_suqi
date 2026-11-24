@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="使用自然语言在图片中定位目标的视觉检测工作台。">
+  <title>开放词汇目标检测 · 视觉工作台</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" type="module"></script>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-focus" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m13-5h3a2 2 0 0 1 2 2v3M3 16v3a2 2 0 0 0 2 2h3m13-5v3a2 2 0 0 1-2 2h-3"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-photo" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 16-5-5L5 21"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m-5 5 5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6-10-6-10-6Z"/><circle cx="12" cy="12" r="2.5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h6m4 0h6M4 17h10m4 0h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></symbol>
+    <symbol id="i-chip" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="3"/><rect x="9" y="9" width="6" height="6" rx="1"/><path d="M9 2v3m6-3v3m-6 14v3m6-3v3M2 9h3m-3 6h3m14-6h3m-3 6h3"/></symbol>
+  </svg>
+
+  <header class="topbar">
+    <div class="top-inner">
+      <div class="brand"><span class="brand-mark"><svg><use href="#i-focus"/></svg></span><span>视觉工作台</span></div>
+      <div class="actions"><a class="button quiet" href="/change">变化检测</a><span class="model"><svg><use href="#i-chip"/></svg>qwen3.8-27b</span></div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="intro">
+      <h1>开放词汇目标检测</h1>
+      <p>上传图片，输入任意目标名称或描述，查看它们在图中的位置。</p>
+    </div>
+
+    <div class="workspace">
+      <section class="panel image-panel" aria-labelledby="preview-title">
+        <div class="panel-head preview-head">
+          <h2 id="preview-title"><svg><use href="#i-photo"/></svg>图像预览</h2>
+          <div class="actions">
+            <button id="sample" class="button quiet" type="button">载入样例</button>
+            <button id="upload" class="button outline" type="button"><svg><use href="#i-upload"/></svg>上传图片</button>
+            <input id="file" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+          </div>
+        </div>
+        <div id="stage" class="stage" aria-busy="true">
+          <div class="image-wrap" id="image-wrap" hidden>
+            <img id="image" alt="待检测图片">
+            <div id="boxes" class="boxes" aria-hidden="true"></div>
+          </div>
+          <p id="stage-empty" class="stage-empty">正在载入样例图片…</p>
+          <div class="drop-message" aria-hidden="true"><svg><use href="#i-upload"/></svg>松开以上传图片</div>
+        </div>
+        <div class="image-footer">
+          <div class="metadata"><svg><use href="#i-photo"/></svg><span id="filename">街景样例</span><span id="dimensions"></span></div>
+          <label class="toggle"><svg><use href="#i-eye"/></svg>显示检测框<input id="show-boxes" type="checkbox" checked><span class="switch" aria-hidden="true"></span></label>
+        </div>
+        <p class="file-error" id="file-error" role="alert" hidden></p>
+      </section>
+
+      <div class="side">
+        <section class="panel control-panel" aria-labelledby="control-title">
+          <h2 id="control-title"><svg><use href="#i-sliders"/></svg>检测配置</h2>
+          <form id="detect-form">
+            <label for="terms">目标词</label>
+            <textarea id="terms" rows="3" aria-describedby="terms-help" placeholder="例如：红色的汽车，自行车，背包">自行车，行人，橙色汽车</textarea>
+            <div class="input-note"><span id="terms-help">用逗号、分号或换行分隔</span><span id="term-count">3 / 24</span></div>
+            <button id="detect" class="button primary" type="submit" disabled><svg><use href="#i-focus"/></svg><span>开始检测</span></button>
+          </form>
+        </section>
+
+        <section class="panel result-panel" aria-labelledby="result-title">
+          <div class="panel-head result-head">
+            <h2 id="result-title"><svg><use href="#i-list"/></svg>检测结果</h2>
+            <div class="view-control" role="group" aria-label="结果视图">
+              <button type="button" id="view-list" aria-pressed="true">列表</button>
+              <button type="button" id="view-json" aria-pressed="false">JSON</button>
+            </div>
+          </div>
+          <div class="result-body" id="result-body">
+            <p id="result-status" class="result-status" role="status" aria-live="polite" hidden></p>
+            <div class="result-empty" id="result-empty"><span class="empty-mark"><svg><use href="#i-focus"/></svg></span><p>等待检测</p><span>运行检测后在此查看目标和坐标</span></div>
+            <ul id="result-list" class="result-list" aria-label="检测框列表" hidden></ul>
+            <div id="json-view" class="json-view" hidden>
+              <button class="button outline copy" id="copy" type="button"><svg><use href="#i-copy"/></svg><span>复制</span></button>
+              <pre id="json-output" tabindex="0"></pre>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <footer class="footer"><span>支持 JPG、PNG、WebP · 最大 10 MB</span><span>边界框坐标归一化至 0–1000</span></footer>
+  </main>
+</body>
+</html>

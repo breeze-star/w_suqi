@@ -1,0 +1,20 @@
+name: w-suqi
+
+services:
+  suqi:
+    image: ${SUQI_IMAGE:?set SUQI_IMAGE to the verified project image digest}
+    container_name: w-suqi
+    network_mode: bridge
+    ports:
+      - "127.0.0.1:5001:5001"
+    volumes:
+      - type: bind
+        source: /data1/weifeng/suqi
+        target: /data/suqi
+        read_only: true
+        bind:
+          create_host_path: false
+    environment:
+      QWEN_CHAT_COMPLETIONS_URL: ${QWEN_CHAT_COMPLETIONS_URL:-}
+      QWEN_MODEL: ${QWEN_MODEL:-qwen3.8-27b}
+      QWEN_API_KEY: ${QWEN_API_KEY:-}

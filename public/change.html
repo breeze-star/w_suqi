@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>变化检测 · 视觉工作台</title>
+  <link rel="stylesheet" href="/style.css"><script type="module" src="/change.js"></script>
+</head>
+<body>
+  <header class="topbar"><div class="top-inner"><div class="brand"><span class="brand-mark">◎</span><span>视觉工作台</span></div><div class="actions"><a class="button quiet" href="/">目标检测</a><span class="model">qwen3.8-27b</span></div></div></header>
+  <main class="layout">
+    <div class="intro"><h1>变化检测</h1><p>对比同一位置的两张照片，识别较晚照片中疑似新增的目标。</p></div>
+    <div class="change-grid">
+      <section class="panel change-image"><div class="panel-head"><h2>时间 A · 较早</h2><button class="button outline" type="button" id="upload-a">上传图片</button><input id="file-a" type="file" accept="image/jpeg,image/png,image/webp" hidden></div><div class="change-stage"><div class="change-wrap" id="wrap-a" hidden><img id="image-a" alt="时间 A 的图片"></div><p id="empty-a">请选择时间 A 的照片</p></div><div class="image-footer"><span id="name-a">支持 JPG、PNG、WebP</span></div></section>
+      <section class="panel change-image"><div class="panel-head"><h2>时间 B · 较晚</h2><button class="button outline" type="button" id="upload-b">上传图片</button><input id="file-b" type="file" accept="image/jpeg,image/png,image/webp" hidden></div><div class="change-stage"><div class="change-wrap" id="wrap-b" hidden><img id="image-b" alt="时间 B 的图片"><div id="change-boxes" class="boxes" aria-hidden="true"></div></div><p id="empty-b">请选择时间 B 的照片</p></div><div class="image-footer"><span id="name-b">检测框将显示在此图上</span></div></section>
+    </div>
+    <div class="change-bottom"><section class="panel control-panel"><h2>检测配置</h2><form id="change-form"><label for="target">关注的新增目标</label><input class="change-input" id="target" value="建筑" maxlength="80" required><p class="change-help">例如建筑、道路或车辆。两张照片的视角越接近，越便于比较。</p><button class="button primary" id="run" type="submit" disabled>开始对比</button></form></section><section class="panel result-panel"><div class="panel-head result-head"><h2>对比结果</h2></div><div class="result-body"><p id="status" role="status" aria-live="polite">上传两张图片后开始对比</p><ul class="result-list" id="results"></ul><details id="raw" hidden><summary>查看模型原始输出</summary><pre id="raw-text"></pre></details></div></section></div>
+    <footer class="footer"><span>每张图片最大 10 MB</span><span>结果需要结合原图人工复核</span></footer>
+  </main>
+</body>
+</html>
