@@ -81,6 +81,7 @@ async function complete(images, prompt, signal, maxTokens = 4096) {
       messages: [{ role: 'user', content: [...images, { type: 'text', text: prompt }] }],
       temperature: 0,
       max_tokens: maxTokens,
+      ...(process.env.QWEN_DISABLE_THINKING === '1' && { enable_thinking: false }),
       ...(process.env.QWEN_VLLM_DISABLE_THINKING === '1' && {
         chat_template_kwargs: { enable_thinking: false },
       }),
