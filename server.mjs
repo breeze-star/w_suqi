@@ -52,7 +52,10 @@ function parseModelJSON(raw) {
 }
 
 function parseBoxes(raw, terms, building) {
-  const boxes = parseModelJSON(raw);
+  const text = raw.trim();
+  const startsWithJSON = ['[', '{', '`'].includes(text[0]);
+  const emptyAfterExplanation = building && !startsWithJSON && /\n[ \t]*\[\s*\]$/.test(text);
+  const boxes = emptyAfterExplanation ? [] : parseModelJSON(text);
   if (!Array.isArray(boxes) || !boxes.every(item => {
     const box = item?.bbox_2d;
     const validLabel = building
