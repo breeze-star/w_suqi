@@ -63,7 +63,12 @@
           <h2 id="control-title"><svg><use href="#i-sliders"/></svg>检测配置</h2>
           <form id="detect-form">
             <label for="terms">目标词</label>
-            <textarea id="terms" rows="3" aria-describedby="terms-help" placeholder="例如：红色的汽车，自行车，背包">自行车，行人，橙色汽车</textarea>
+            <div class="preset-actions" id="presets" role="group" aria-label="巡检预设">
+              <button class="button outline" type="button" data-term="道路坑洼">道路坑洼</button>
+              <button class="button outline" type="button" data-term="河道大面积植被">河道大面积植被</button>
+              <button class="button outline" type="button" data-term="秸秆禁烧">秸秆禁烧</button>
+            </div>
+            <textarea id="terms" rows="3" aria-describedby="terms-help" placeholder="选择预设或输入其他目标词">道路坑洼，河道大面积植被，秸秆禁烧</textarea>
             <div class="input-note"><span id="terms-help">用逗号、分号或换行分隔</span><span id="term-count">3 / 24</span></div>
             <button id="detect" class="button primary" type="submit" disabled><svg><use href="#i-focus"/></svg><span>开始检测</span></button>
           </form>

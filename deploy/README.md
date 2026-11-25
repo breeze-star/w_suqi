@@ -1,6 +1,6 @@
 # w-suqi 测试环境预演
 
-目标为通过已授权访问路径连接的测试机 `server-1`。服务器上的项目目录为 `/data1/weifeng/suqi`。容器名 `w-suqi`，回环预演端口 `127.0.0.1:5001` 映射至容器 `5001`，项目目录只读挂载到 `/data/suqi`，程序从镜像内 `/app` 启动。预演复用 Docker 已有的 `bridge` 网络，以避免新增网段与宿主机路由冲突。
+目标为通过已授权访问路径连接的测试机 `server-1`。服务器上的项目目录为 `/data1/weifeng/suqi`。`w-suqi` 通过 `network_mode: host` 使用宿主机现有网络，直接在 `SUQI_BIND_IP:5001` 监听。项目目录只读挂载到 `/data/suqi`，程序从镜像内 `/app` 启动。
 
 ## 配置 Jenkins
 
@@ -19,12 +19,23 @@
 
 ## 项目容器
 
-拿到已通过预演的镜像后，可从目标机 `/data1/weifeng/suqi/source` 执行以下命令创建 `w-suqi`。`create` 产出待启动容器。
+通过 JumpServer 确认测试机可登录后，将新版 Compose 配置同步到 `/data1/weifeng/suqi/source`。使用已通过预演的镜像摘要和测试机网卡上已分配的私网 IP。确认调用方到该地址有路由，ECS 安全组的 TCP `5001` 入站来源限制为获准的调用方地址或安全组。
 
 ```sh
+set -eu
 export SUQI_IMAGE='registry.example.com/namespace/w-suqi@sha256:<verified-digest>'
-docker compose create --pull never suqi
-docker inspect w-suqi --format '{{.State.Status}} {{json .HostConfig.PortBindings}} {{json .Mounts}}'
+export SUQI_BIND_IP='<test-server-private-ip>'
+ip -4 -o addr show | awk -v target="$SUQI_BIND_IP" '
+    { split($4, address, "/"); if (address[1] == target) found = 1 }
+    END { exit !found }
+'
+listeners=$(ss -H -ltn 'sport = :5001')
+test -z "$listeners"
+docker compose config --quiet
+docker compose create --no-recreate --pull never suqi
+test "$(docker inspect w-suqi --format '{{.HostConfig.NetworkMode}}')" = host
 ```
+
+创建后先从 JumpServer 新开会话复核连通性。通过后执行 `docker start w-suqi`，从测试机和实际调用方分别请求 `http://<test-server-private-ip>:5001/`。再次验证 JumpServer 可以登录，并确认 Docker 网络列表未新增项目网桥。若容器检查报告了旧网络模式，先确认该容器属于本次预演并完成清理，再按新版配置创建。
 
 公网 Qwen 接入需要通过环境变量提供 `QWEN_CHAT_COMPLETIONS_URL`（完整 HTTPS `chat/completions` URL）、`QWEN_MODEL`（供应方模型 ID）和 `QWEN_API_KEY`（由已授权的秘密存储注入）。正式业务验收需要配置真实点位、完成两类接口，并用供应方支持的图片请求分别验证单图和双图推理。首页冒烟只验证容器可启动并提供网页。

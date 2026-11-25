@@ -126,6 +126,12 @@ $('sample').onclick = sample;
 $('upload').onclick = () => $('file').click();
 $('file').onchange = e => { loadImage(e.target.files[0], e.target.files[0]?.name); e.target.value = ''; };
 $('terms').oninput = updateControls;
+$('presets').addEventListener('click', event => {
+  const term = event.target.closest('button')?.dataset.term;
+  if (!term) return;
+  $('terms').value = term;
+  updateControls();
+});
 $('show-boxes').onchange = e => { $('boxes').hidden = !e.target.checked; };
 ['list', 'json'].forEach(view => $(`view-${view}`).onclick = () => {
   $('view-list').setAttribute('aria-pressed', String(view === 'list'));

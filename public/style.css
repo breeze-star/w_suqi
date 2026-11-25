@@ -127,10 +127,10 @@ pre { width: 100%; margin: 0; max-height: 264px; overflow: auto; white-space: pr
 }
 .change-grid, .change-bottom { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .change-bottom { margin-top: 20px; grid-template-columns: minmax(280px, 1fr) minmax(0, 2fr); }
-.change-stage { min-height: 300px; height: clamp(300px, 38vw, 480px); display: grid; place-items: center; background: #1c1e2b; color: #ede9fa; }
-.change-wrap { position: relative; max-width: 100%; max-height: 100%; }
-.change-wrap img { display: block; max-width: 100%; max-height: clamp(300px, 38vw, 480px); }
-.change-input { width: 100%; border: 1px solid #d8daeb; border-radius: 9px; padding: 10px 11px; font: inherit; }
+.preset-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.change-stage { --change-h: clamp(300px, 38vw, 480px); height: var(--change-h); display: grid; place-items: center; background: #1c1e2b; color: #ede9fa; }
+.change-wrap { position: relative; width: min(100%, calc(var(--change-h) * var(--ratio))); }
+.change-wrap img { display: block; width: 100%; }
 .change-help { color: var(--muted); font-size: .875rem; line-height: 1.5; }
 .change-bottom .result-body { min-height: 140px; }
 .change-bottom #status { line-height: 1.5; }
