@@ -6,17 +6,21 @@ const model = process.env.QWEN_MODEL || 'qwen3.8-27b';
 const port = Number(process.env.PORT ?? 4317);
 const host = process.env.HOST || '127.0.0.1';
 const detectionRules = new Map([
-  ['道路坑洼', '定位道路表面有清晰破损边缘、明显低于周围路面的坑洞或凹坑。每个可辨认的坑洼单独画框。排除只有裂缝、平整的修补路面、井盖、减速带、标线和阴影。仅有积水且看不清坑洼边缘时跳过。'],
-  ['河道大面积植被', '先确定河道和实际水面，再定位河道内成片覆盖水面的漂浮或挺水植被。每一片连续覆盖区域画一个紧贴的框。排除河岸树草、临水农田、倒影、水色变化和少量零散植株。仅描述可见植被覆盖范围。'],
-  ['秸秆禁烧', '定位农田或田边疑似正在露天焚烧秸秆的位置。须同时看到可辨认的秸秆或作物残茬，以及从该处产生的明火或烟。框住燃烧源和紧邻的秸秆，排除飘远的烟带、只有焦痕的区域、雾、扬尘和非农田烟源。无法判断燃烧材料时跳过。'],
+  ['道路坑洼', {
+    presence: '画面里清楚看到可通行路面破损形成的独立凹坑，能直接分辨坑壁或坑底与周围路面的落差。仅有俯拍远处道路纹理、石子、阴影、裂纹或积水，无法确认凹陷，判断缺失。',
+    locate: '每个可辨认的独立凹坑单独画框，贴合可见破损边缘。排除平整修补路面、井盖、减速带、标线和阴影。仅有积水且看不清坑洼边缘时跳过。',
+  }],
+  ['河道大面积植被', {
+    presence: '画面里清楚看到低矮浮叶或水生植被成片占据实际河道水面，浮叶团块和水直接接触。农田、岸线上成行的树冠、岸边绿带、倒影和零散浮叶判断缺失。',
+    locate: '沿两侧河岸确定实际水面边界，每片只框在水面内连续铺开的植被。排除沿岸树冠、草带及倒影，即使它们紧贴或遮住河岸。水和岸界看不清时跳过。',
+  }],
+  ['秸秆禁烧', {
+    presence: '必须在画面内看到清晰的明火或发光余烬与可辨认秸秆、作物残茬直接接触。仅见烟、雾、焦痕或从画外进入的烟，即使背景是收割后农田，也判断缺失。',
+    locate: '框住画面内直接接触秸秆的明火或发光余烬，以及紧接的秸秆。框贴地面的燃烧源，排除空中烟带、雾、焦痕和非农田烟源。',
+  }],
 ]);
-const buildingPrompt = `比较同一地点较早的照片 A 和较晚的照片 B，仅定位疑似新增或拆除的固定建筑。
-先用道路、水体和保留建筑等固定地标确认同一位置，再对比两图都能清楚看到的区域。只把可辨认建筑及其结构变化计入结果。
-新增（added）：A 中对应位置可见且没有该建筑，B 中出现该建筑。框住 B 图上的新增建筑。
-拆除（removed）：A 中有建筑，B 中对应位置清楚可见且建筑已消失。框住 A 图上的原建筑。
-排除季节、光照、屋顶颜色、阴影、植被、车辆、遮挡或视角变化造成的差异。两图不可比或对应位置看不清时跳过。
-仅返回 JSON 数组。每项格式为 {"label":"建筑","type":"added","bbox_2d":[100,200,400,600]}，type 仅可为 added 或 removed。
-bbox_2d 为对应原图上归一化至 0–1000 的 [左,上,右,下]，原点为对应图片左上角。无可判定的建筑变化时输出 []。`;
+const buildingPrompt = `对比同一地点第一张 A 和第二张 B。请以道路、河岸、相邻建筑为参照配对同一个地块。只有一张图显示独立固定建筑，另一张图对应位置直接能看到空地或裸露地表时，才记录变化。两张图都有且能够一一对应的建筑全部排除，即使屋顶颜色、角度、尺寸或光照不同。不要把变化旁边仍存在的建筑列入。季节、植被、阴影、遮挡不算建筑变化。
+对每个真实变化，先核实现场状态，再只输出包含 {"state_a":"building 或 ground","state_b":"building 或 ground","bbox_2d":[左,上,右,下]} 的 JSON 数组。a 表示输入第一张图、b 表示第二张。两个状态必须不同。框住有建筑的那一张图上可见的完整建筑，坐标归一化到 0–1000。没有可靠变化时输出 []。`;
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
@@ -42,21 +46,66 @@ function validImage(value) {
   return header.toString('ascii', 0, 4) === 'RIFF' && header.toString('ascii', 8, 12) === 'WEBP';
 }
 
-function parseBoxes(raw, terms, building) {
+function parseModelJSON(raw) {
   const clean = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  const boxes = JSON.parse(clean);
+  return JSON.parse(clean);
+}
+
+function parseBoxes(raw, terms, building) {
+  const boxes = parseModelJSON(raw);
   if (!Array.isArray(boxes) || !boxes.every(item => {
     const box = item?.bbox_2d;
     const validLabel = building
-      ? item?.label === '建筑' && ['added', 'removed'].includes(item.type)
+      ? (item?.state_a === 'building' && item.state_b === 'ground') ||
+        (item?.state_a === 'ground' && item.state_b === 'building')
       : terms.includes(item?.label);
     return validLabel && Array.isArray(box) && box.length === 4 &&
       box.every(n => Number.isFinite(n) && n >= 0 && n <= 1000) && box[0] < box[2] && box[1] < box[3];
   })) throw new Error('Invalid detections');
-  if (building) return boxes.map(({ label, type, bbox_2d }) => ({
-    label, type, image_role: type === 'added' ? 'b' : 'a', bbox_2d,
-  }));
+  if (building) return boxes.map(({ state_a, bbox_2d }) => {
+    const removed = state_a === 'building';
+    return {
+      label: '建筑', type: removed ? 'removed' : 'added', image_role: removed ? 'a' : 'b', bbox_2d,
+    };
+  });
   return boxes.map(({ label, bbox_2d }) => ({ label, bbox_2d }));
+}
+
+async function complete(images, prompt, signal, maxTokens = 4096) {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.QWEN_API_KEY}`, 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      model,
+      messages: [{ role: 'user', content: [...images, { type: 'text', text: prompt }] }],
+      temperature: 0,
+      max_tokens: maxTokens,
+      ...(process.env.QWEN_VLLM_DISABLE_THINKING === '1' && {
+        chat_template_kwargs: { enable_thinking: false },
+      }),
+    }),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    const message = [401, 403].includes(response.status) ? '请检查服务端令牌。' : '请稍后重试。';
+    return { error: `模型接口返回 HTTP ${response.status}。${message}` };
+  }
+  const completion = await response.json();
+  const choice = completion.choices?.[0];
+  const raw = typeof choice?.message?.content === 'string' ? choice.message.content : '';
+  if (choice?.finish_reason === 'length') {
+    return { error: '模型输出达到长度上限，请减少目标词或目标数量。', raw };
+  }
+  return { raw };
+}
+
+function confirmedPresets(raw, presets) {
+  const { present } = parseModelJSON(raw) ?? {};
+  if (!Array.isArray(present) || !present.every(label => presets.includes(label))) {
+    throw new Error('Invalid preset check output');
+  }
+  return new Set(present);
 }
 
 async function detect(req, res, change = false) {
@@ -100,64 +149,63 @@ async function detect(req, res, change = false) {
   if (!process.env.QWEN_API_KEY) return json(res, 503, { error: '请先在服务端配置 QWEN_API_KEY。' });
   if (!endpoint) return json(res, 503, { error: '请先在服务端配置 QWEN_CHAT_COMPLETIONS_URL。' });
 
-  let prompt;
-  if (building) {
-    prompt = buildingPrompt;
-  } else if (change) {
-    prompt = `比较图片 A（较早）和图片 B（较晚），判断图片 B 中是否出现图片 A 中没有的目标 ${JSON.stringify(terms[0])}。仅报告清晰可辨的新增目标。只输出 JSON 数组，每项为 {"label":${JSON.stringify(terms[0])},"bbox_2d":[100,200,400,600]}。bbox_2d 是 B 图上归一化至 0–1000 的 [左,上,右,下]。没有可确认的新增目标时输出 []。`;
-  } else {
-    const rules = terms.flatMap(term => {
-      const rule = detectionRules.get(term.trim());
-      return rule ? [`${JSON.stringify(term)}：${rule}`] : [];
-    });
-    prompt = `请在图片中定位与以下任一类名或描述匹配的所有可见实例：${JSON.stringify(terms)}。
-${rules.join('\n')}
-每个实例单独返回一个最贴合目标的矩形框，label 必须使用列表中的原始词语。不要推测画面外或未匹配的目标。
-只输出 JSON 数组，例如 [{"label":"目标词","bbox_2d":[100,200,400,600]}]。
-bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左上角。没有匹配实例则输出 []。`;
-  }
   const started = performance.now();
   const disconnect = new AbortController();
   res.once('close', () => disconnect.abort());
   const timeout = AbortSignal.timeout(120_000);
+  const signal = AbortSignal.any([timeout, disconnect.signal]);
+  const elapsedMs = () => Math.round(performance.now() - started);
+  const images = change ? [
+    { type: 'text', text: building ? '图 A（第一张）：' : '图片 A，较早时间：' },
+    { type: 'image_url', image_url: { url: imageA } },
+    { type: 'text', text: building ? '图 B（第二张）：' : '图片 B，较晚时间：' },
+    { type: 'image_url', image_url: { url: imageB } },
+  ] : [{ type: 'image_url', image_url: { url: image } }];
 
   try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${process.env.QWEN_API_KEY}`, 'Content-Type': 'application/json' },
-      signal: AbortSignal.any([timeout, disconnect.signal]),
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content: [
-          ...(change ? [{ type: 'text', text: '图片 A，较早时间：' }, { type: 'image_url', image_url: { url: imageA } }, { type: 'text', text: '图片 B，较晚时间：' }, { type: 'image_url', image_url: { url: imageB } }] : [{ type: 'image_url', image_url: { url: image } }]),
-          { type: 'text', text: prompt },
-        ] }],
-        temperature: 0,
-        max_tokens: 4096,
-        ...(process.env.QWEN_VLLM_DISABLE_THINKING === '1' && {
-          chat_template_kwargs: { enable_thinking: false },
-        }),
-      }),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      const message = [401, 403].includes(response.status) ? '请检查服务端令牌。' : '请稍后重试。';
-      return json(res, 502, { error: `模型接口返回 HTTP ${response.status}。${message}` });
+    let targets = terms;
+    if (!change) {
+      const presets = [...new Set(terms.map(term => term.trim()).filter(term => detectionRules.has(term)))];
+      if (presets.length) {
+        const criteria = presets.map(term => `${term}：${detectionRules.get(term).presence}`).join('\n');
+        const confirmPrompt = `检查图中是否明确存在以下巡检目标 ${JSON.stringify(presets)}。\n${criteria}\n只根据肉眼能在画面内指出的清晰目标判定。输出 JSON 对象 {"present":["可确认存在的目标原文"]}。看不清边界、介质或根源时按缺失处理。完全没有确认目标时 present 为空数组。不要描述或定位。`;
+        const confirmation = await complete(images, confirmPrompt, signal, 800);
+        if (confirmation.error) return json(res, 502, { ...confirmation, elapsedMs: elapsedMs() });
+        try {
+          const confirmed = confirmedPresets(confirmation.raw, presets);
+          targets = terms.filter(term => !detectionRules.has(term.trim()) || confirmed.has(term.trim()));
+        } catch {
+          return json(res, 502, { error: '模型输出不符合巡检目标确认格式。', raw: confirmation.raw, elapsedMs: elapsedMs() });
+        }
+        if (!targets.length) return json(res, 200, { model, elapsedMs: elapsedMs(), detections: [] });
+      }
     }
-    const completion = await response.json();
-    const choice = completion.choices?.[0];
-    const raw = typeof choice?.message?.content === 'string' ? choice.message.content : '';
-    const elapsedMs = Math.round(performance.now() - started);
-    if (choice?.finish_reason === 'length') {
-      return json(res, 502, { error: '模型输出达到长度上限，请减少目标词或目标数量。', raw, elapsedMs });
+
+    let prompt;
+    if (building) {
+      prompt = buildingPrompt;
+    } else if (change) {
+      prompt = `比较图片 A（较早）和图片 B（较晚），判断图片 B 中是否出现图片 A 中没有的目标 ${JSON.stringify(terms[0])}。仅报告清晰可辨的新增目标。只输出 JSON 数组，每项为 {"label":${JSON.stringify(terms[0])},"bbox_2d":[100,200,400,600]}。bbox_2d 是 B 图上归一化至 0–1000 的 [左,上,右,下]。没有可确认的新增目标时输出 []。`;
+    } else {
+      const rules = targets.flatMap(term => {
+        const rule = detectionRules.get(term.trim());
+        return rule ? [`${JSON.stringify(term)}：${rule.locate}`] : [];
+      });
+      prompt = `请在图片中定位与以下任一类名或描述匹配的所有可见实例：${JSON.stringify(targets)}。
+${rules.join('\n')}
+每个实例单独返回一个最贴合目标的矩形框，label 必须使用列表中的原始词语。不要推测画面外或未匹配的目标。
+只输出 JSON 数组，例如 [{"label":"目标词","bbox_2d":[100,200,400,600]}]。
+bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左上角。没有匹配实例则输出 []。`;
     }
+    const result = await complete(images, prompt, signal);
+    if (result.error) return json(res, 502, { ...result, elapsedMs: elapsedMs() });
     let detections;
     try {
-      detections = parseBoxes(raw, terms, building);
+      detections = parseBoxes(result.raw, targets, building);
     } catch {
-      return json(res, 502, { error: '模型输出不符合检测框格式，可在 JSON 视图查看原文。', raw, elapsedMs });
+      return json(res, 502, { error: '模型输出不符合检测框格式，可在 JSON 视图查看原文。', raw: result.raw, elapsedMs: elapsedMs() });
     }
-    return json(res, 200, { model, elapsedMs, detections });
+    return json(res, 200, { model, elapsedMs: elapsedMs(), detections });
   } catch {
     if (disconnect.signal.aborted) return;
     return json(res, timeout.aborted ? 504 : 502, {
