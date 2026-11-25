@@ -31,6 +31,17 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function validImage(value) {
+  if (typeof value !== 'string') return false;
+  const match = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (!match || match[0].length !== value.length || match[2].length % 4 !== 0) return false;
+
+  const header = Buffer.from(match[2].slice(0, 16), 'base64');
+  if (match[1] === 'jpeg') return header.toString('hex', 0, 3) === 'ffd8ff';
+  if (match[1] === 'png') return header.toString('hex', 0, 8) === '89504e470d0a1a0a';
+  return header.toString('ascii', 0, 4) === 'RIFF' && header.toString('ascii', 8, 12) === 'WEBP';
+}
+
 function parseBoxes(raw, terms, building) {
   const clean = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   const boxes = JSON.parse(clean);
@@ -49,19 +60,24 @@ function parseBoxes(raw, terms, building) {
 }
 
 async function detect(req, res, change = false) {
-  if (req.headers['content-type']?.split(';')[0] !== 'application/json') {
+  if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
+    req.resume();
     return json(res, 415, { error: '请求需使用 application/json。' });
   }
-  if (!process.env.QWEN_API_KEY) return json(res, 503, { error: '请先在服务端配置 QWEN_API_KEY。' });
-  if (!endpoint) return json(res, 503, { error: '请先在服务端配置 QWEN_CHAT_COMPLETIONS_URL。' });
 
+  const maxBytes = (change ? 30 : 15) * 1024 * 1024;
+  const tooLarge = { error: '图片请求太大，请选择较小的图片。' };
+  if (Number(req.headers['content-length']) > maxBytes) {
+    req.resume();
+    return json(res, 413, tooLarge);
+  }
   const chunks = [];
   let bytes = 0;
   for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     bytes += chunk.length;
-    if (bytes > (change ? 30 : 15) * 1024 * 1024) {
+    if (bytes > maxBytes) {
       req.resume();
-      return json(res, 413, { error: '图片请求太大，请选择较小的图片。' });
+      return json(res, 413, tooLarge);
     }
     chunks.push(chunk);
   }
@@ -74,7 +90,6 @@ async function detect(req, res, change = false) {
   }
   const { image, imageA, imageB, terms } = input ?? {};
   const building = change && terms === undefined;
-  const validImage = value => typeof value === 'string' && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value);
   if (change ? !validImage(imageA) || !validImage(imageB) : !validImage(image)) {
     return json(res, 400, { error: '请提供有效的 JPG、PNG 或 WebP 图片。' });
   }
@@ -82,6 +97,8 @@ async function detect(req, res, change = false) {
       terms.some(term => typeof term !== 'string' || !term.trim() || term.length > 80))) {
     return json(res, 400, { error: '请提供 1–24 个目标词，每项最多 80 个字符。' });
   }
+  if (!process.env.QWEN_API_KEY) return json(res, 503, { error: '请先在服务端配置 QWEN_API_KEY。' });
+  if (!endpoint) return json(res, 503, { error: '请先在服务端配置 QWEN_CHAT_COMPLETIONS_URL。' });
 
   let prompt;
   if (building) {
