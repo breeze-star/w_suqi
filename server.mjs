@@ -85,12 +85,11 @@ function comparisonImages(imageA, imageB, building) {
 
 function parseBuildingComparison(raw) {
   const { coverage_a, coverage_b, comparable, detections } = parseModelJSON(raw) ?? {};
-  const boxes = validateBoxes(detections, undefined, true);
-  if (typeof comparable !== 'boolean' || (!comparable && boxes.length) ||
+  if (typeof comparable !== 'boolean' || !Array.isArray(detections) || (!comparable && detections.length) ||
       ![coverage_a, coverage_b].every(value => Number.isInteger(value) && value >= 0 && value <= 100)) {
     throw new Error('Invalid comparison status');
   }
-  return { comparable: comparable && Math.min(coverage_a, coverage_b) >= minimumSharedCoverage, detections: boxes };
+  return { comparable: comparable && Math.min(coverage_a, coverage_b) >= minimumSharedCoverage, detections };
 }
 
 async function complete(images, prompt, signal, maxTokens = 4096) {
@@ -239,7 +238,9 @@ bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左�
           elapsedMs: elapsedMs(),
         });
       }
-      return json(res, 200, { model, elapsedMs: elapsedMs(), comparable: true, detections: first.detections });
+      raw = results[0].raw;
+      const detections = validateBoxes(first.detections, undefined, true);
+      return json(res, 200, { model, elapsedMs: elapsedMs(), comparable: true, detections });
     } catch {
       const error = building ? '模型输出缺少有效的可比性结论或检测框。' : '模型输出不符合检测框格式，可在 JSON 视图查看原文。';
       return json(res, 502, { error, raw, elapsedMs: elapsedMs() });
