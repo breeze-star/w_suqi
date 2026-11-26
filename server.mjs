@@ -19,8 +19,12 @@ const detectionRules = new Map([
     locate: '框住画面内直接接触秸秆的明火或发光余烬，以及紧接的秸秆。框贴地面的燃烧源，排除空中烟带、雾、焦痕和非农田烟源。',
   }],
 ]);
-const buildingPrompt = `对比同一地点第一张 A 和第二张 B。请以道路、河岸、相邻建筑为参照配对同一个地块。只有一张图显示独立固定建筑，另一张图对应位置直接能看到空地或裸露地表时，才记录变化。两张图都有且能够一一对应的建筑全部排除，即使屋顶颜色、角度、尺寸或光照不同。不要把变化旁边仍存在的建筑列入。季节、植被、阴影、遮挡不算建筑变化。
-对每个真实变化，先核实现场状态，再只输出包含 {"state_a":"building 或 ground","state_b":"building 或 ground","bbox_2d":[左,上,右,下]} 的 JSON 数组。a 表示输入第一张图、b 表示第二张。两个状态必须不同。框住有建筑的那一张图上可见的完整建筑，坐标归一化到 0–1000。没有可靠变化时输出 []。`;
+const minimumSharedCoverage = 75;
+const buildingPrompt = `对比第一张 A 和第二张 B 的建筑变化。依次完成下面三步，只输出一个 JSON 对象。
+1. 先核对取景范围。分别估计两张完整图片中在对方图里也能定位到的场景面积百分比 coverage_a 和 coverage_b，填写 0 到 100 的整数。比较画面中央及四个象限的固定参照，包括道路与地块的相对位置、相邻建筑、河道和地块边界。大幅裁剪、变焦、转向和地块出画会降低覆盖率。若 B 只拍到了 A 右上方约四分之一，A 的覆盖率约 25，即便 B 的覆盖率接近 100。两图都有道路或草地无法证明它们是同一范围，找不到对应区域时填 0。
+2. 两图覆盖率都至少 ${minimumSharedCoverage}，且主要地块在两图中清晰可见并能可靠配对时，填写 comparable 为 true。主要地块出画、显著失焦、遮挡、固定参照不足或看不准则填写 false。季节和光照差异本身不影响可比性。
+3. 只有可比时才定位。只报告独立固定建筑与清晰可见的空地或裸露地表之间的变化。两张图都有且能一一对应的建筑全部排除。排除视野外、遮挡、阴影和植被变化。疑似变化的主要地块在任一图无法核实时，填写 comparable 为 false。
+输出格式 {"coverage_a":95,"coverage_b":98,"comparable":true,"detections":[{"state_a":"ground","state_b":"building","bbox_2d":[100,200,400,600]}]}，示例数值须替换为本次判断。不可比或可比但无可靠变化时 detections 为 []。每个变化中 a、b 状态分别使用 building 或 ground，且必须不同。框住有建筑的那张图上的完整建筑，坐标按 [左,上,右,下] 归一化到 0–1000。不要输出解释。`;
 const assets = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/app.js', ['app.js', 'text/javascript; charset=utf-8']],
@@ -51,11 +55,7 @@ function parseModelJSON(raw) {
   return JSON.parse(clean);
 }
 
-function parseBoxes(raw, terms, building) {
-  const text = raw.trim();
-  const startsWithJSON = ['[', '{', '`'].includes(text[0]);
-  const emptyAfterExplanation = building && !startsWithJSON && /\n[ \t]*\[\s*\]$/.test(text);
-  const boxes = emptyAfterExplanation ? [] : parseModelJSON(text);
+function validateBoxes(boxes, terms, building) {
   if (!Array.isArray(boxes) || !boxes.every(item => {
     const box = item?.bbox_2d;
     const validLabel = building
@@ -72,6 +72,25 @@ function parseBoxes(raw, terms, building) {
     };
   });
   return boxes.map(({ label, bbox_2d }) => ({ label, bbox_2d }));
+}
+
+function comparisonImages(imageA, imageB, building) {
+  return [
+    { type: 'text', text: building ? '图 A（第一张）：' : '图片 A，较早时间：' },
+    { type: 'image_url', image_url: { url: imageA } },
+    { type: 'text', text: building ? '图 B（第二张）：' : '图片 B，较晚时间：' },
+    { type: 'image_url', image_url: { url: imageB } },
+  ];
+}
+
+function parseBuildingComparison(raw) {
+  const { coverage_a, coverage_b, comparable, detections } = parseModelJSON(raw) ?? {};
+  const boxes = validateBoxes(detections, undefined, true);
+  if (typeof comparable !== 'boolean' || (!comparable && boxes.length) ||
+      ![coverage_a, coverage_b].every(value => Number.isInteger(value) && value >= 0 && value <= 100)) {
+    throw new Error('Invalid comparison status');
+  }
+  return { comparable: comparable && Math.min(coverage_a, coverage_b) >= minimumSharedCoverage, detections: boxes };
 }
 
 async function complete(images, prompt, signal, maxTokens = 4096) {
@@ -159,12 +178,7 @@ async function detect(req, res, change = false) {
   const timeout = AbortSignal.timeout(120_000);
   const signal = AbortSignal.any([timeout, disconnect.signal]);
   const elapsedMs = () => Math.round(performance.now() - started);
-  const images = change ? [
-    { type: 'text', text: building ? '图 A（第一张）：' : '图片 A，较早时间：' },
-    { type: 'image_url', image_url: { url: imageA } },
-    { type: 'text', text: building ? '图 B（第二张）：' : '图片 B，较晚时间：' },
-    { type: 'image_url', image_url: { url: imageB } },
-  ] : [{ type: 'image_url', image_url: { url: image } }];
+  const images = change ? comparisonImages(imageA, imageB, building) : [{ type: 'image_url', image_url: { url: image } }];
 
   try {
     let targets = terms;
@@ -201,15 +215,35 @@ ${rules.join('\n')}
 只输出 JSON 数组，例如 [{"label":"目标词","bbox_2d":[100,200,400,600]}]。
 bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左上角。没有匹配实例则输出 []。`;
     }
-    const result = await complete(images, prompt, signal);
-    if (result.error) return json(res, 502, { ...result, elapsedMs: elapsedMs() });
-    let detections;
+    const comparisons = [complete(images, prompt, signal)];
+    if (building) comparisons.push(complete(comparisonImages(imageB, imageA, true), prompt, signal));
+    const results = await Promise.all(comparisons);
+    const failure = results.find(result => result.error);
+    if (failure) return json(res, 502, { ...failure, elapsedMs: elapsedMs() });
+    let raw;
     try {
-      detections = parseBoxes(result.raw, targets, building);
+      raw = results[0].raw;
+      if (!building) {
+        const detections = validateBoxes(parseModelJSON(raw), targets, false);
+        return json(res, 200, { model, elapsedMs: elapsedMs(), detections });
+      }
+      const first = parseBuildingComparison(raw);
+      raw = results[1].raw;
+      const second = parseBuildingComparison(raw);
+      // A narrower photo can make the wider view look like an addition when the image order is reversed.
+      if (!first.comparable || !second.comparable) {
+        return json(res, 422, {
+          errorCode: 'IMAGES_NOT_COMPARABLE',
+          error: '两张照片无法可靠比较，请核对拍摄点位、视角和画面清晰度。',
+          comparable: false,
+          elapsedMs: elapsedMs(),
+        });
+      }
+      return json(res, 200, { model, elapsedMs: elapsedMs(), comparable: true, detections: first.detections });
     } catch {
-      return json(res, 502, { error: '模型输出不符合检测框格式，可在 JSON 视图查看原文。', raw: result.raw, elapsedMs: elapsedMs() });
+      const error = building ? '模型输出缺少有效的可比性结论或检测框。' : '模型输出不符合检测框格式，可在 JSON 视图查看原文。';
+      return json(res, 502, { error, raw, elapsedMs: elapsedMs() });
     }
-    return json(res, 200, { model, elapsedMs: elapsedMs(), detections });
   } catch {
     if (disconnect.signal.aborted) return;
     return json(res, timeout.aborted ? 504 : 502, {
