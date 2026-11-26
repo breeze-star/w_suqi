@@ -7,7 +7,7 @@ const port = Number(process.env.PORT ?? 4317);
 const host = process.env.HOST || '127.0.0.1';
 const roadCrackRule = {
   presence: '先定位可通行的沥青或水泥铺装路面，再确认裂缝实际切开该路面的铺装材料。同一条裂缝两侧应能看出相连的铺装表面，并能分辨开裂边缘或局部破损。近景可由清晰的铺装纹理确认路面。航拍画面只有少量路面时也只检查该铺装区域。田垄、耕作条纹、车辙、田埂、地块边界、排水沟、裸土开裂、道路边沿、阴影、标线及完整的规则接缝均排除。无法明确裂缝位于铺装内部时判断缺失。',
-  locate: '在已经确认的沥青或水泥铺装内部定位实际破损裂口。连通或分叉的同一裂缝只框一次。互不相连的裂缝各用独立 JSON 对象，每个对象只允许一个 bbox_2d 字段且包含四个坐标。即使画面里另有道路，也排除农田或裸土上的黑线、灌溉渠、田埂、路肩边界、标线、阴影及平整接缝。不要跨出铺装区域追踪线条。看不清铺装破损的局部时跳过。',
+  locate: '在已经确认的沥青或水泥铺装内部定位实际破损裂口。连通或分叉的同一裂缝只框一次，互不相连的裂缝分别输出。即使画面里另有道路，也排除农田或裸土上的黑线、灌溉渠、田埂、路肩边界、标线、阴影及平整接缝。不要跨出铺装区域追踪线条。看不清铺装破损的局部时跳过。',
 };
 const detectionRules = new Map([
   ['道路裂缝', roadCrackRule],
@@ -96,6 +96,17 @@ function parseBuildingComparison(raw) {
     throw new Error('Invalid comparison status');
   }
   return { comparable: comparable && Math.min(coverage_a, coverage_b) >= minimumSharedCoverage, detections };
+}
+
+function boxesFromRows(parsed) {
+  const rows = parsed?.detections;
+  if (!Array.isArray(rows) || !rows.every(Array.isArray)) {
+    throw new Error('Invalid detection rows');
+  }
+  // Qwen can return a mix of nested and flat coordinates in the same response.
+  return rows.map(([label, ...coordinates]) => ({
+    label, bbox_2d: coordinates.length === 1 ? coordinates[0] : coordinates,
+  }));
 }
 
 async function complete(images, prompt, signal, maxTokens = 4096) {
@@ -204,6 +215,7 @@ async function detect(req, res, change = false) {
       }
     }
 
+    const crackRows = !change && targets.some(term => detectionRules.get(term.trim()) === roadCrackRule);
     let prompt;
     if (building) {
       prompt = buildingPrompt;
@@ -214,11 +226,14 @@ async function detect(req, res, change = false) {
         const rule = detectionRules.get(term.trim());
         return rule ? [`${JSON.stringify(term)}：${rule.locate}`] : [];
       });
-      prompt = `请在图片中定位与以下任一类名或描述匹配的所有可见实例：${JSON.stringify(targets)}。
-${rules.join('\n')}
-每个实例单独返回一个最贴合目标的矩形框，label 必须使用列表中的原始词语。不要推测画面外或未匹配的目标。
+      const format = crackRows
+        ? `只输出一个 JSON 对象。detections 内每行 [目标词,[左,上,右,下]] 对应一个实例，例如 {"detections":[[${JSON.stringify(targets[0])},[100,200,400,600]]]}。目标词使用列表原词，坐标归一化至 0–1000。无匹配时输出 {"detections":[]}。`
+        : `每个实例单独返回一个最贴合目标的矩形框，label 必须使用列表中的原始词语。不要推测画面外或未匹配的目标。
 只输出 JSON 数组，例如 [{"label":"目标词","bbox_2d":[100,200,400,600]}]。
 bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左上角。没有匹配实例则输出 []。`;
+      prompt = `请在图片中定位与以下任一类名或描述匹配的所有可见实例：${JSON.stringify(targets)}。
+${rules.join('\n')}
+${format}`;
     }
     const comparisons = [complete(images, prompt, signal)];
     if (building) comparisons.push(complete(comparisonImages(imageB, imageA, true), prompt, signal));
@@ -229,7 +244,8 @@ bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左�
     try {
       raw = results[0].raw;
       if (!building) {
-        const detections = validateBoxes(parseModelJSON(raw), targets, false);
+        const parsed = parseModelJSON(raw);
+        const detections = validateBoxes(crackRows ? boxesFromRows(parsed) : parsed, targets, false);
         return json(res, 200, { model, elapsedMs: elapsedMs(), detections });
       }
       const first = parseBuildingComparison(raw);
