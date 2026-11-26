@@ -183,6 +183,66 @@ async function verifyCrackBoxes(images, detections, signal) {
   }
 }
 
+function segmentTouchesBox(start, end, box) {
+  let enter = 0;
+  let leave = 1;
+  for (let axis = 0; axis < 2; axis++) {
+    const delta = end[axis] - start[axis];
+    if (delta === 0) {
+      if (start[axis] < box[axis] || start[axis] > box[axis + 2]) return false;
+      continue;
+    }
+    const first = (box[axis] - start[axis]) / delta;
+    const last = (box[axis + 2] - start[axis]) / delta;
+    enter = Math.max(enter, Math.min(first, last));
+    leave = Math.min(leave, Math.max(first, last));
+    if (enter > leave) return false;
+  }
+  return true;
+}
+
+function boxInsideWater(box, polygon) {
+  const x = (box[0] + box[2]) / 2;
+  const y = (box[1] + box[3]) / 2;
+  let inside = false;
+  for (let i = 0; i < polygon.length; i++) {
+    const start = polygon[i];
+    const end = polygon[(i + 1) % polygon.length];
+    if (segmentTouchesBox(start, end, box)) return false;
+    const [x1, y1] = start;
+    const [x2, y2] = end;
+    if ((y1 > y) !== (y2 > y) && x < x1 + (x2 - x1) * (y - y1) / (y2 - y1)) inside = !inside;
+  }
+  return inside;
+}
+
+async function verifyRiverDebrisBoxes(images, detections, signal) {
+  const candidates = detections.filter(item => detectionRules.get(item.label.trim()) === riverDebrisRule);
+  if (!candidates.length) return { detections };
+  const regions = candidates.map(({ bbox_2d }, index) => ({ index, bbox_2d }));
+  const prompt = `独立复核河道漂浮物候选。图中已有彩色标注忽略。所有坐标按 0–1000 归一化，原点在左上角。
+先沿两岸的真实水陆分界画出可确认的开阔河道水面轮廓。water_polygons 中每项是一个闭合区域的外轮廓，按顺序写至少三个顶点 [x,y]。曲折岸线用多个顶点表达。排除陆地、岸边植物、悬垂树冠和看不清的边界，只圈完全可辨认的水面；水面无法确认时给空数组。不要用河道外接矩形代替轮廓。
+再独立逐框核对 ${JSON.stringify(regions)}，框是 [左,上,右,下]。只有能看见框内确有杂物、确认杂物浮在水面且整个框在可辨认的水面内，才把编号放入 confirmed。岸上、压岸线、位置不清、固定物、阴影和反光均不确认。只输出 JSON 对象，例如 {"water_polygons":[[[320,0],[670,0],[650,1000],[330,1000]]],"confirmed":[0]}。数值仅为格式示例。`;
+  const result = await complete(images, prompt, signal, 2000, true);
+  if (result.error) return result;
+  try {
+    const { water_polygons: polygons, confirmed } = parseModelJSON(result.raw) ?? {};
+    const validPolygons = Array.isArray(polygons) && polygons.every(polygon => Array.isArray(polygon) &&
+      polygon.length >= 3 && polygon.every(point => Array.isArray(point) && point.length === 2 &&
+        point.every(value => Number.isFinite(value) && value >= 0 && value <= 1000)));
+    if (!validPolygons || !Array.isArray(confirmed) ||
+        !confirmed.every(index => Number.isInteger(index) && index >= 0 && index < candidates.length)) {
+      throw new Error('Invalid river debris verification');
+    }
+    const approved = new Set(confirmed);
+    const rejected = new Set(candidates.filter((item, index) =>
+      !approved.has(index) || !polygons.some(polygon => boxInsideWater(item.bbox_2d, polygon))));
+    return { detections: detections.filter(item => !rejected.has(item)) };
+  } catch {
+    return { error: '模型输出不符合河道漂浮物复核格式。', raw: result.raw };
+  }
+}
+
 async function detect(req, res, change = false) {
   if (req.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json') {
     req.resume();
@@ -251,7 +311,9 @@ async function detect(req, res, change = false) {
       }
     }
 
-    const crackRows = !change && targets.some(term => detectionRules.get(term.trim()) === roadCrackRule);
+    const checkCracks = !change && targets.some(term => detectionRules.get(term.trim()) === roadCrackRule);
+    const useDetectionRows = checkCracks ||
+      (!change && targets.some(term => detectionRules.get(term.trim()) === riverDebrisRule));
     let prompt;
     if (building) {
       prompt = buildingPrompt;
@@ -262,7 +324,7 @@ async function detect(req, res, change = false) {
         const rule = detectionRules.get(term.trim());
         return rule ? [`${JSON.stringify(term)}：${rule.locate}`] : [];
       });
-      const format = crackRows
+      const format = useDetectionRows
         ? `只输出一个 JSON 对象。detections 内每行对应一个实例，坐标为归一化至 0–1000 的 [左,上,右,下]。${targets.length === 1
           ? '本次目标只有一类，每行只填坐标，如 {"detections":[[100,200,400,600]]}。'
           : `每行按 [目标词,[左,上,右,下]] 排列，目标词使用列表原词，如 {"detections":[[${JSON.stringify(targets[0])},[100,200,400,600]]]}。`} 无匹配时输出 {"detections":[]}。`
@@ -273,7 +335,7 @@ bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左�
 ${rules.join('\n')}
 ${format}`;
     }
-    const comparisons = [complete(images, prompt, signal, 4096, crackRows)];
+    const comparisons = [complete(images, prompt, signal, 4096, useDetectionRows)];
     if (building) comparisons.push(complete(comparisonImages(imageB, imageA, true), prompt, signal));
     const results = await Promise.all(comparisons);
     const failure = results.find(result => result.error);
@@ -299,13 +361,18 @@ ${format}`;
         return json(res, 200, { model, elapsedMs: elapsedMs(), comparable: true, detections: boxes });
       }
       const parsed = parseModelJSON(raw);
-      detections = validateBoxes(crackRows ? boxesFromRows(parsed, targets) : parsed, targets, false);
+      detections = validateBoxes(useDetectionRows ? boxesFromRows(parsed, targets) : parsed, targets, false);
     } catch {
       const error = building ? '模型输出缺少有效的可比性结论或检测框。' : '模型输出不符合检测框格式，可在 JSON 视图查看原文。';
       return json(res, 502, { error, raw, elapsedMs: elapsedMs() });
     }
-    if (crackRows) {
+    if (checkCracks) {
       const verification = await verifyCrackBoxes(images, detections, signal);
+      if (verification.error) return json(res, 502, { ...verification, elapsedMs: elapsedMs() });
+      detections = verification.detections;
+    }
+    if (!change) {
+      const verification = await verifyRiverDebrisBoxes(images, detections, signal);
       if (verification.error) return json(res, 502, { ...verification, elapsedMs: elapsedMs() });
       detections = verification.detections;
     }
