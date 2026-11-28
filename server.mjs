@@ -10,8 +10,12 @@ const roadCrackRule = {
   locate: '在已经确认的沥青或水泥铺装内部定位实际破损裂口。连通或分叉的同一裂缝只框一次，互不相连的裂缝分别输出。即使画面里另有道路，也排除农田或裸土上的黑线、灌溉渠、田埂、路肩边界、标线、阴影及平整接缝。不要跨出铺装区域追踪线条。看不清铺装破损的局部时跳过。',
 };
 const riverDebrisRule = {
-  presence: '先确认画面中有可辨认的连续河道水面，并能沿岸线或渠壁区分水面和陆地。只有能看清杂物位于水面内、与水直接接触并漂浮时才确认，如塑料、泡沫、垃圾或脱落枝条。农田、犁沟、车辙、裸土、干沟、阴影和岸上堆积均排除。水面反光、倒影、波纹和成片水生植被也排除。看不清水面，或无法确认物体浮在水上时，判断缺失。',
-  locate: '先核对水面和岸界，只框实际浮在河道水面上的可辨认杂物。框紧贴单个物体或相连的一团杂物，排除岸边物体、田地、干沟、反光、倒影、波纹和成片水生植被。不要框整段河道或整张图。',
+  presence: '沿岸线确认河道水域。检测浮在水上的垃圾、泡沫、脱落杂物，也检测河心和贴岸的成片水生植被。紧贴岸线的低矮浮叶毯也可确认。直立植物须能看清茎的根部进入水中，仅叶片伸到水面上不算。排除船只、船上物品、树木及其树冠、陆生植物、固定设施、倒影、反光和零星浮叶。',
+  locate: '分别框住浮在水面上的垃圾、泡沫、脱落杂物和成片水生植被。检查河中央和两侧水缘，尤其是紧贴岸边的低矮浮叶团。框贴合目标，水生植被的矩形框可以贴到岸线。避开船只、船上物品、树木及树冠、陆生植物、固定设施和反光。不框整段河道。',
+};
+const riverVegetationRule = {
+  presence: '检查河心和两侧水缘，确认成片或成带的水生植被，例如浮萍和水葫芦。贴岸的低矮浮叶毯即使只在朝河心的一侧露出水，也可以确认。区分贴着水面的圆叶团与树冠、带长叶和穗的高草。直立植物只有清楚看见茎从浅水中长出才算水生，看到枝叶挡住水面而看不到茎基部时跳过。排除陆生植被、倒影和少量孤立浮叶。',
+  locate: '分别返回河心疏散但成带的细小浮萍、两岸紧贴水面的密集浮叶毯。逐段扫描左右水缘，包括画面角落。每一块分别框，避免把相隔较远的浮叶带合成大框。近岸浮叶毯紧邻树木或高草时，沿贴水叶毯自身的边界框；如果上端是树冠，框的上边界从下方浮叶开始。只允许矩形边角少量跨岸。',
 };
 const detectionRules = new Map([
   ['道路裂缝', roadCrackRule],
@@ -26,10 +30,7 @@ const detectionRules = new Map([
   }],
   ['河道漂浮物', riverDebrisRule],
   ['河面漂浮物', riverDebrisRule],
-  ['河道大面积植被', {
-    presence: '画面里清楚看到低矮浮叶或水生植被成片占据实际河道水面，浮叶团块和水直接接触。农田、岸线上成行的树冠、岸边绿带、倒影和零散浮叶判断缺失。',
-    locate: '沿两侧河岸确定实际水面边界，每片只框在水面内连续铺开的植被。排除沿岸树冠、草带及倒影，即使它们紧贴或遮住河岸。水和岸界看不清时跳过。',
-  }],
+  ['河道大面积植被', riverVegetationRule],
   ['秸秆禁烧', {
     presence: '必须在画面内看到清晰的明火或发光余烬与可辨认秸秆、作物残茬直接接触。仅见烟、雾、焦痕或从画外进入的烟，即使背景是收割后农田，也判断缺失。',
     locate: '框住画面内直接接触秸秆的明火或发光余烬，以及紧接的秸秆。框贴地面的燃烧源，排除空中烟带、雾、焦痕和非农田烟源。',
@@ -78,8 +79,7 @@ function validateBoxes(boxes, terms, building) {
       ? (item?.state_a === 'building' && item.state_b === 'ground') ||
         (item?.state_a === 'ground' && item.state_b === 'building')
       : terms.includes(item?.label);
-    return validLabel && Array.isArray(box) && box.length === 4 &&
-      box.every(n => Number.isFinite(n) && n >= 0 && n <= 1000) && box[0] < box[2] && box[1] < box[3];
+    return validLabel && validBox(box);
   })) throw new Error('Invalid detections');
   if (building) return boxes.map(({ state_a, bbox_2d }) => {
     const removed = state_a === 'building';
@@ -88,6 +88,11 @@ function validateBoxes(boxes, terms, building) {
     };
   });
   return boxes.map(({ label, bbox_2d }) => ({ label, bbox_2d }));
+}
+
+function validBox(box) {
+  return Array.isArray(box) && box.length === 4 &&
+    box.every(n => Number.isFinite(n) && n >= 0 && n <= 1000) && box[0] < box[2] && box[1] < box[3];
 }
 
 function comparisonImages(imageA, imageB, building) {
@@ -110,15 +115,16 @@ function parseBuildingComparison(raw) {
 
 function boxesFromRows(parsed, targets) {
   const rows = parsed?.detections;
-  if (!Array.isArray(rows) || !rows.every(Array.isArray)) {
+  if (!Array.isArray(rows)) {
     throw new Error('Invalid detection rows');
   }
   return rows.map(row => {
+    if (!Array.isArray(row)) return row;
     if (targets.length === 1 && row.length === 4 && row.every(Number.isFinite)) {
       return { label: targets[0], bbox_2d: row };
     }
-    const [label, ...coordinates] = row;
-    return { label, bbox_2d: coordinates.length === 1 ? coordinates[0] : coordinates };
+    const [label, first, ...remaining] = row;
+    return { label, bbox_2d: Array.isArray(first) ? first : [first, ...remaining] };
   });
 }
 
@@ -201,14 +207,21 @@ function segmentTouchesBox(start, end, box) {
   return true;
 }
 
-function boxInsideWater(box, polygon) {
+// The model's simplified outline can sit inside the visible water at the shore.
+const vegetationShoreTolerance = 25; // In 0–1000 image coordinates.
+
+function boxMatchesWater(box, polygon, vegetation) {
   const x = (box[0] + box[2]) / 2;
   const y = (box[1] + box[3]) / 2;
+  const boundaryBox = vegetation
+    ? box.map((value, index) => value + (index < 2 ? -vegetationShoreTolerance : vegetationShoreTolerance))
+    : box;
   let inside = false;
   for (let i = 0; i < polygon.length; i++) {
     const start = polygon[i];
     const end = polygon[(i + 1) % polygon.length];
-    if (segmentTouchesBox(start, end, box)) return false;
+    const imageEdge = start.some((value, axis) => (value === 0 || value === 1000) && value === end[axis]);
+    if (!imageEdge && segmentTouchesBox(start, end, boundaryBox)) return vegetation;
     const [x1, y1] = start;
     const [x2, y2] = end;
     if ((y1 > y) !== (y2 > y) && x < x1 + (x2 - x1) * (y - y1) / (y2 - y1)) inside = !inside;
@@ -216,28 +229,56 @@ function boxInsideWater(box, polygon) {
   return inside;
 }
 
-async function verifyRiverDebrisBoxes(images, detections, signal) {
-  const candidates = detections.filter(item => detectionRules.get(item.label.trim()) === riverDebrisRule);
+function isRiverSurfaceTarget(term) {
+  const rule = detectionRules.get(term.trim());
+  return rule === riverDebrisRule || rule === riverVegetationRule;
+}
+
+async function verifyRiverSurfaceBoxes(images, detections, targets, signal) {
+  const candidates = detections.filter(item => isRiverSurfaceTarget(item.label));
   if (!candidates.length) return { detections };
   const regions = candidates.map(({ bbox_2d }, index) => ({ index, bbox_2d }));
-  const prompt = `独立复核河道漂浮物候选。图中已有彩色标注忽略。所有坐标按 0–1000 归一化，原点在左上角。
-先沿两岸的真实水陆分界画出可确认的开阔河道水面轮廓。water_polygons 中每项是一个闭合区域的外轮廓，按顺序写至少三个顶点 [x,y]。曲折岸线用多个顶点表达。排除陆地、岸边植物、悬垂树冠和看不清的边界，只圈完全可辨认的水面；水面无法确认时给空数组。不要用河道外接矩形代替轮廓。
-再独立逐框核对 ${JSON.stringify(regions)}，框是 [左,上,右,下]。只有能看见框内确有杂物、确认杂物浮在水面且整个框在可辨认的水面内，才把编号放入 confirmed。岸上、压岸线、位置不清、固定物、阴影和反光均不确认。只输出 JSON 对象，例如 {"water_polygons":[[[320,0],[670,0],[650,1000],[330,1000]]],"confirmed":[0]}。数值仅为格式示例。`;
+  const prompt = `独立复核每个河面目标。忽略图中标注。所有坐标按 0–1000 归一化，原点为左上角。
+先逐框检查 ${JSON.stringify(regions)}。可辨认且独立漂浮的垃圾、泡沫、断枝等记为 debris，框须全部在水域内。水面漂浮的植被记为 vegetation，包括稀疏成带的浮萍和沿岸密实成片的浮叶。贴岸浮叶的可辨认特征是低矮的整片圆叶直接铺到水线上，只有朝河心的一侧看得见水也成立。框内其它部分有岸、树或高草时，保留贴水浮叶并缩框，不能把两者一起排除。成片直立水草只有能看到茎基部从水中长出才可确认。排除纯陆生植被、树冠、船、倒影和零星小点。
+已贴合的框输出 [编号,类别]。需要收紧时，在原框内按目标外缘给出 [编号,类别,左,上,右,下]。树冠下有浮叶时，把框的上边界移到水面叶团开始处。没有通过的候选时 confirmed 为 []。
+再画 water_polygons，每个轮廓用 3 至 16 个顶点，按 x1,y1,x2,y2,x3,y3 的顺序用逗号分隔整数坐标，作为一个字符串。轮廓沿真实水陆界线，遇到弯折或已确认的贴岸浮叶时加顶点，把叶团下方的可确认水域画进去。不要用河心开阔水面的规则四边形替代岸线，也不要把陆地和船体画进去。水域无法确认时给空数组。用 boat_boxes 标出可见船体及船上物品，每条船给一个 [左,上,右,下]，没有船时填 []。
+只输出 JSON，例如 {"confirmed":[[0,"debris"],[2,"vegetation",340,430,410,540]],"water_polygons":["320,0,670,0,650,1000,330,1000"],"boat_boxes":[]}。`;
   const result = await complete(images, prompt, signal, 2000, true);
   if (result.error) return result;
   try {
-    const { water_polygons: polygons, confirmed } = parseModelJSON(result.raw) ?? {};
-    const validPolygons = Array.isArray(polygons) && polygons.every(polygon => Array.isArray(polygon) &&
-      polygon.length >= 3 && polygon.every(point => Array.isArray(point) && point.length === 2 &&
-        point.every(value => Number.isFinite(value) && value >= 0 && value <= 1000)));
-    if (!validPolygons || !Array.isArray(confirmed) ||
-        !confirmed.every(index => Number.isInteger(index) && index >= 0 && index < candidates.length)) {
+    const { water_polygons: outlines, boat_boxes: boats, confirmed } = parseModelJSON(result.raw) ?? {};
+    const validPolygons = Array.isArray(outlines) && outlines.every(outline =>
+      typeof outline === 'string' && /^\d{1,4}(?:\s*,\s*\d{1,4}){5,}$/.test(outline.trim()));
+    const validBoats = Array.isArray(boats) && boats.every(validBox);
+    if (!validPolygons || !validBoats || !Array.isArray(confirmed) ||
+        !confirmed.every(entry => Array.isArray(entry) &&
+          Number.isInteger(entry[0]) && entry[0] >= 0 && entry[0] < candidates.length &&
+          (entry[1] === 'debris' || entry[1] === 'vegetation') &&
+          (entry.length === 2 || (entry.length === 6 && validBox(entry.slice(2)))))) {
       throw new Error('Invalid river debris verification');
     }
-    const approved = new Set(confirmed);
-    const rejected = new Set(candidates.filter((item, index) =>
-      !approved.has(index) || !polygons.some(polygon => boxInsideWater(item.bbox_2d, polygon))));
-    return { detections: detections.filter(item => !rejected.has(item)) };
+    const polygons = outlines.map(outline => {
+      const coordinates = outline.split(',').map(Number);
+      if (coordinates.length % 2 || coordinates.some(value => value > 1000)) throw new Error('Invalid water polygon');
+      return Array.from({ length: coordinates.length / 2 }, (_, index) => coordinates.slice(index * 2, index * 2 + 2));
+    });
+    const approved = new Map(confirmed.map(([index, kind, ...box]) => [index, { kind, box }]));
+    if (approved.size !== confirmed.length) throw new Error('Duplicate river debris verification');
+    const separateVegetation = targets.some(term => detectionRules.get(term.trim()) === riverVegetationRule);
+    const reviewed = new Map(candidates.map((item, index) => {
+      const review = approved.get(index);
+      const vegetation = detectionRules.get(item.label.trim()) === riverVegetationRule;
+      if (!review || (vegetation && review.kind !== 'vegetation') ||
+          (!vegetation && separateVegetation && review.kind === 'vegetation')) return [item, null];
+      const bbox = review.box.length ? review.box : item.bbox_2d;
+      const [left, top, right, bottom] = bbox;
+      const [outerLeft, outerTop, outerRight, outerBottom] = item.bbox_2d;
+      if (left < outerLeft || top < outerTop || right > outerRight || bottom > outerBottom ||
+          boats.some(([x1, y1, x2, y2]) => left < x2 && x1 < right && top < y2 && y1 < bottom) ||
+          !polygons.some(polygon => boxMatchesWater(bbox, polygon, review.kind === 'vegetation'))) return [item, null];
+      return [item, { ...item, bbox_2d: bbox }];
+    }));
+    return { detections: detections.map(item => reviewed.has(item) ? reviewed.get(item) : item).filter(Boolean) };
   } catch {
     return { error: '模型输出不符合河道漂浮物复核格式。', raw: result.raw };
   }
@@ -297,9 +338,14 @@ async function detect(req, res, change = false) {
     if (!change) {
       const presets = [...new Set(terms.map(term => term.trim()).filter(term => detectionRules.has(term)))];
       if (presets.length) {
-        const criteria = presets.map(term => `${term}：${detectionRules.get(term).presence}`).join('\n');
+        const separateVegetation = presets.includes('河道大面积植被');
+        const criteria = presets.map(term => {
+          const rule = detectionRules.get(term);
+          const scope = rule === riverDebrisRule && separateVegetation ? '本次单独检查水生植被，此项只确认垃圾、泡沫和脱落杂物。' : '';
+          return `${term}：${rule.presence}${scope}`;
+        }).join('\n');
         const confirmPrompt = `检查图中是否明确存在以下巡检目标 ${JSON.stringify(presets)}。\n${criteria}\n只根据肉眼能在画面内指出的清晰目标判定。输出 JSON 对象 {"present":["可确认存在的目标原文"]}。看不清边界、介质或根源时按缺失处理。完全没有确认目标时 present 为空数组。不要描述或定位。`;
-        const confirmation = await complete(images, confirmPrompt, signal, 800);
+        const confirmation = await complete(images, confirmPrompt, signal, 800, presets.some(isRiverSurfaceTarget));
         if (confirmation.error) return json(res, 502, { ...confirmation, elapsedMs: elapsedMs() });
         try {
           const confirmed = confirmedPresets(confirmation.raw, presets);
@@ -312,22 +358,24 @@ async function detect(req, res, change = false) {
     }
 
     const checkCracks = !change && targets.some(term => detectionRules.get(term.trim()) === roadCrackRule);
-    const useDetectionRows = checkCracks ||
-      (!change && targets.some(term => detectionRules.get(term.trim()) === riverDebrisRule));
+    const checkRiverSurface = !change && targets.some(isRiverSurfaceTarget);
+    const useDetectionRows = checkCracks || checkRiverSurface;
     let prompt;
     if (building) {
       prompt = buildingPrompt;
     } else if (change) {
       prompt = `比较图片 A（较早）和图片 B（较晚），判断图片 B 中是否出现图片 A 中没有的目标 ${JSON.stringify(terms[0])}。仅报告清晰可辨的新增目标。只输出 JSON 数组，每项为 {"label":${JSON.stringify(terms[0])},"bbox_2d":[100,200,400,600]}。bbox_2d 是 B 图上归一化至 0–1000 的 [左,上,右,下]。没有可确认的新增目标时输出 []。`;
     } else {
+      const separateVegetation = targets.some(term => detectionRules.get(term.trim()) === riverVegetationRule);
       const rules = targets.flatMap(term => {
         const rule = detectionRules.get(term.trim());
-        return rule ? [`${JSON.stringify(term)}：${rule.locate}`] : [];
+        const scope = rule === riverDebrisRule && separateVegetation ? '此项只框垃圾、泡沫和脱落杂物，水生植被归到其专用目标词。' : '';
+        return rule ? [`${JSON.stringify(term)}：${rule.locate}${scope}`] : [];
       });
       const format = useDetectionRows
         ? `只输出一个 JSON 对象。detections 内每行对应一个实例，坐标为归一化至 0–1000 的 [左,上,右,下]。${targets.length === 1
           ? '本次目标只有一类，每行只填坐标，如 {"detections":[[100,200,400,600]]}。'
-          : `每行按 [目标词,[左,上,右,下]] 排列，目标词使用列表原词，如 {"detections":[[${JSON.stringify(targets[0])},[100,200,400,600]]]}。`} 无匹配时输出 {"detections":[]}。`
+          : `每行按 [目标词,左,上,右,下] 排列，目标词使用列表原词，如 {"detections":[[${JSON.stringify(targets[0])},100,200,400,600]]}。`} 无匹配时输出 {"detections":[]}。`
         : `每个实例单独返回一个最贴合目标的矩形框，label 必须使用列表中的原始词语。不要推测画面外或未匹配的目标。
 只输出 JSON 数组，例如 [{"label":"目标词","bbox_2d":[100,200,400,600]}]。
 bbox_2d 是归一化至 0–1000 的 [左, 上, 右, 下]，原点在图片左上角。没有匹配实例则输出 []。`;
@@ -371,8 +419,8 @@ ${format}`;
       if (verification.error) return json(res, 502, { ...verification, elapsedMs: elapsedMs() });
       detections = verification.detections;
     }
-    if (!change) {
-      const verification = await verifyRiverDebrisBoxes(images, detections, signal);
+    if (checkRiverSurface) {
+      const verification = await verifyRiverSurfaceBoxes(images, detections, targets, signal);
       if (verification.error) return json(res, 502, { ...verification, elapsedMs: elapsedMs() });
       detections = verification.detections;
     }
